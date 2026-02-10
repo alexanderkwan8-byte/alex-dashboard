@@ -33,7 +33,7 @@ export default function SpawnAgentDialog({
 
     try {
       await onSpawn({
-        label: formData.label || undefined,
+        label: formData.label || "",
         taskDescription: formData.taskDescription,
       });
       setFormData({ label: "", taskDescription: "" });
