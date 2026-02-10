@@ -18,10 +18,12 @@ interface Task {
   deadline?: string;
   createdAt: string;
   completedAt?: string | null;
+  agentId?: string; // Optional agent association
 }
 
 interface TasksData {
   tasks: Task[];
+  agents?: Record<string, any>; // Agent task collections
   activityLog: any[];
 }
 
@@ -30,7 +32,7 @@ async function readTasks(): Promise<TasksData> {
     const data = await fs.readFile(TASKS_FILE, "utf-8");
     return JSON.parse(data);
   } catch {
-    return { tasks: [], activityLog: [] };
+    return { tasks: [], agents: {}, activityLog: [] };
   }
 }
 
@@ -41,6 +43,18 @@ async function writeTasks(data: TasksData): Promise<void> {
 export async function GET(request: NextRequest) {
   try {
     const data = await readTasks();
+    const { searchParams } = new URL(request.url);
+    const agentId = searchParams.get("agentId");
+
+    // If filtering by agent, return only that agent's tasks
+    if (agentId) {
+      const agentTasks = data.tasks.filter((t) => t.agentId === agentId);
+      return NextResponse.json({
+        tasks: agentTasks,
+        activityLog: data.activityLog,
+      });
+    }
+
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(
@@ -64,15 +78,30 @@ export async function POST(request: NextRequest) {
       deadline: body.deadline,
       createdAt: new Date().toISOString(),
       completedAt: null,
+      agentId: body.agentId, // Associate with agent if provided
     };
 
     data.tasks.push(newTask);
+
+    // Initialize agents object if not present
+    if (!data.agents) {
+      data.agents = {};
+    }
+
+    // Add to agent-specific tracking if agentId provided
+    if (body.agentId) {
+      if (!data.agents[body.agentId]) {
+        data.agents[body.agentId] = { tasks: [] };
+      }
+      data.agents[body.agentId].tasks.push(newTask.id);
+    }
 
     // Add activity log entry
     data.activityLog.push({
       id: `log-${Date.now()}`,
       action: "Task created",
       taskId: newTask.id,
+      agentId: body.agentId,
       timestamp: new Date().toISOString(),
       details: newTask.title,
     });
