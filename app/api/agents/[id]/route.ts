@@ -35,10 +35,10 @@ async function writeAgents(data: AgentsData): Promise<void> {
 
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agentId = params.id;
+    const { id: agentId } = await params;
     const body = await request.json();
     const data = await readAgents();
 
@@ -69,10 +69,10 @@ export async function PATCH(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agentId = params.id;
+    const { id: agentId } = await params;
     const data = await readAgents();
 
     delete data.agents[agentId];
