@@ -1,62 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
-
-const TASKS_FILE = path.join(
-  process.cwd(),
-  "..",
-  "dashboard",
-  "tasks.json"
-);
-
-interface Task {
-  id: string;
-  title: string;
-  description: string;
-  priority: "low" | "medium" | "high";
-  status: "queued" | "in-progress" | "done" | "blocked";
-  deadline?: string;
-  createdAt: string;
-  completedAt?: string | null;
-  agentId?: string; // Optional agent association
-}
-
-interface TasksData {
-  tasks: Task[];
-  agents?: Record<string, any>; // Agent task collections
-  activityLog: any[];
-}
-
-async function readTasks(): Promise<TasksData> {
-  try {
-    const data = await fs.readFile(TASKS_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return { tasks: [], agents: {}, activityLog: [] };
-  }
-}
-
-async function writeTasks(data: TasksData): Promise<void> {
-  await fs.writeFile(TASKS_FILE, JSON.stringify(data, null, 2));
-}
+import { supabase } from "@/lib/supabase";
 
 export async function GET(request: NextRequest) {
   try {
-    const data = await readTasks();
     const { searchParams } = new URL(request.url);
     const agentId = searchParams.get("agentId");
 
-    // If filtering by agent, return only that agent's tasks
+    let query = supabase.from("tasks").select("*").order("created_at", { ascending: false });
+
     if (agentId) {
-      const agentTasks = data.tasks.filter((t) => t.agentId === agentId);
-      return NextResponse.json({
-        tasks: agentTasks,
-        activityLog: data.activityLog,
-      });
+      query = query.eq("agent_id", agentId);
     }
 
-    return NextResponse.json(data);
+    const { data: tasks, error: tasksError } = await query;
+
+    if (tasksError) throw tasksError;
+
+    const { data: activityLog, error: logError } = await supabase
+      .from("activity_log")
+      .select("*")
+      .order("timestamp", { ascending: false })
+      .limit(50);
+
+    if (logError) throw logError;
+
+    return NextResponse.json({
+      tasks: tasks || [],
+      activityLog: activityLog || [],
+    });
   } catch (error) {
+    console.error("Error fetching tasks:", error);
     return NextResponse.json(
       { error: "Failed to fetch tasks" },
       { status: 500 }
@@ -67,48 +40,42 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const data = await readTasks();
 
-    const newTask: Task = {
+    const newTask = {
       id: Date.now().toString(),
       title: body.title,
       description: body.description || "",
       priority: body.priority || "low",
       status: "queued",
-      deadline: body.deadline,
-      createdAt: new Date().toISOString(),
-      completedAt: null,
-      agentId: body.agentId, // Associate with agent if provided
+      deadline: body.deadline || null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+      agent_id: body.agentId || null,
     };
 
-    data.tasks.push(newTask);
+    const { data: task, error: taskError } = await supabase
+      .from("tasks")
+      .insert([newTask])
+      .select()
+      .single();
 
-    // Initialize agents object if not present
-    if (!data.agents) {
-      data.agents = {};
-    }
-
-    // Add to agent-specific tracking if agentId provided
-    if (body.agentId) {
-      if (!data.agents[body.agentId]) {
-        data.agents[body.agentId] = { tasks: [] };
-      }
-      data.agents[body.agentId].tasks.push(newTask.id);
-    }
+    if (taskError) throw taskError;
 
     // Add activity log entry
-    data.activityLog.push({
+    const logEntry = {
       id: `log-${Date.now()}`,
       action: "Task created",
-      taskId: newTask.id,
-      agentId: body.agentId,
+      task_id: newTask.id,
+      agent_id: body.agentId || null,
       timestamp: new Date().toISOString(),
       details: newTask.title,
-    });
+    };
 
-    await writeTasks(data);
-    return NextResponse.json(newTask, { status: 201 });
+    await supabase.from("activity_log").insert([logEntry]);
+
+    return NextResponse.json(task, { status: 201 });
   } catch (error) {
+    console.error("Error creating task:", error);
     return NextResponse.json(
       { error: "Failed to create task" },
       { status: 500 }

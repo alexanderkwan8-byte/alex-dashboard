@@ -1,43 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
+import { supabase } from "@/lib/supabase";
 
-const DATA_FILE = path.join(process.cwd(), "..", "dashboard", "agents.json");
-
-interface AgentMetadata {
-  id: string;
-  label: string;
-  status: "idle" | "active" | "completed" | "error";
-  spawnedTime: string;
-  lastActivityTime: string;
-  currentTask?: string;
-  taskCount: number;
-  completedCount: number;
-}
-
-interface AgentsData {
-  agents: Record<string, AgentMetadata>;
-  lastUpdated: string;
-}
-
-async function readAgents(): Promise<AgentsData> {
+export async function GET() {
   try {
-    const data = await fs.readFile(DATA_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return { agents: {}, lastUpdated: new Date().toISOString() };
-  }
-}
+    const { data: agents, error } = await supabase
+      .from("agents")
+      .select("*")
+      .order("spawned_time", { ascending: false });
 
-async function writeAgents(data: AgentsData): Promise<void> {
-  await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2));
-}
+    if (error) throw error;
 
-export async function GET(request: NextRequest) {
-  try {
-    const data = await readAgents();
-    return NextResponse.json(data);
+    // Convert array to object keyed by id
+    const agentsObj = (agents || []).reduce((acc: any, agent: any) => {
+      acc[agent.id] = agent;
+      return acc;
+    }, {});
+
+    return NextResponse.json({
+      agents: agentsObj,
+      lastUpdated: new Date().toISOString(),
+    });
   } catch (error) {
+    console.error("Error fetching agents:", error);
     return NextResponse.json(
       { error: "Failed to fetch agents" },
       { status: 500 }
@@ -48,26 +32,40 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const data = await readAgents();
 
-    const agentId = `agent-${Date.now()}`;
-    const newAgent: AgentMetadata = {
-      id: agentId,
-      label: body.label || `Agent ${Object.keys(data.agents).length + 1}`,
-      status: "idle",
-      spawnedTime: new Date().toISOString(),
-      lastActivityTime: new Date().toISOString(),
-      currentTask: body.taskDescription,
-      taskCount: 0,
-      completedCount: 0,
+    const newAgent = {
+      id: `agent-${Date.now()}`,
+      label: body.label || `Agent ${Date.now()}`,
+      status: "active",
+      spawned_time: new Date().toISOString(),
+      last_activity_time: new Date().toISOString(),
+      current_task: body.taskDescription || null,
+      task_count: 0,
+      completed_count: 0,
     };
 
-    data.agents[agentId] = newAgent;
-    data.lastUpdated = new Date().toISOString();
+    const { data: agent, error } = await supabase
+      .from("agents")
+      .insert([newAgent])
+      .select()
+      .single();
 
-    await writeAgents(data);
-    return NextResponse.json(newAgent, { status: 201 });
+    if (error) throw error;
+
+    // Log agent spawn
+    const logEntry = {
+      id: `log-${Date.now()}`,
+      action: "Agent spawned",
+      agent_id: newAgent.id,
+      timestamp: new Date().toISOString(),
+      details: body.label || "New agent",
+    };
+
+    await supabase.from("activity_log").insert([logEntry]);
+
+    return NextResponse.json(agent, { status: 201 });
   } catch (error) {
+    console.error("Error creating agent:", error);
     return NextResponse.json(
       { error: "Failed to create agent" },
       { status: 500 }

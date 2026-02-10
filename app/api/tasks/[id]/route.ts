@@ -1,31 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
-
-const TASKS_FILE = path.join(
-  process.cwd(),
-  "..",
-  "dashboard",
-  "tasks.json"
-);
-
-interface TasksData {
-  tasks: any[];
-  activityLog: any[];
-}
-
-async function readTasks(): Promise<TasksData> {
-  try {
-    const data = await fs.readFile(TASKS_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return { tasks: [], activityLog: [] };
-  }
-}
-
-async function writeTasks(data: TasksData): Promise<void> {
-  await fs.writeFile(TASKS_FILE, JSON.stringify(data, null, 2));
-}
+import { supabase } from "@/lib/supabase";
 
 export async function PATCH(
   request: NextRequest,
@@ -34,37 +8,50 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await request.json();
-    const data = await readTasks();
 
-    const task = data.tasks.find((t) => t.id === id);
-    if (!task) {
+    // Fetch current task for comparison
+    const { data: currentTask } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (!currentTask) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
-    const oldStatus = task.status;
+    const updates: any = { ...body };
 
-    // Update task
-    Object.assign(task, body);
-
-    if (body.status) {
-      task.status = body.status;
-      if (body.status === "done") {
-        task.completedAt = new Date().toISOString();
-      }
-
-      // Log status change
-      data.activityLog.push({
-        id: `log-${Date.now()}`,
-        action: "Status changed",
-        taskId: id,
-        timestamp: new Date().toISOString(),
-        details: `${oldStatus} → ${body.status}`,
-      });
+    // If status changed to done, set completed_at
+    if (body.status === "done" && currentTask.status !== "done") {
+      updates.completed_at = new Date().toISOString();
     }
 
-    await writeTasks(data);
+    const { data: task, error } = await supabase
+      .from("tasks")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Log status change if applicable
+    if (body.status && body.status !== currentTask.status) {
+      const logEntry = {
+        id: `log-${Date.now()}`,
+        action: "Status changed",
+        task_id: id,
+        timestamp: new Date().toISOString(),
+        details: `${currentTask.status} → ${body.status}`,
+      };
+
+      await supabase.from("activity_log").insert([logEntry]);
+    }
+
     return NextResponse.json(task);
   } catch (error) {
+    console.error("Error updating task:", error);
     return NextResponse.json({ error: "Failed to update task" }, { status: 500 });
   }
 }
@@ -75,21 +62,25 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const data = await readTasks();
 
-    data.tasks = data.tasks.filter((t) => t.id !== id);
+    const { error } = await supabase.from("tasks").delete().eq("id", id);
 
-    data.activityLog.push({
+    if (error) throw error;
+
+    // Log deletion
+    const logEntry = {
       id: `log-${Date.now()}`,
       action: "Task deleted",
-      taskId: id,
+      task_id: id,
       timestamp: new Date().toISOString(),
       details: "Task removed",
-    });
+    };
 
-    await writeTasks(data);
+    await supabase.from("activity_log").insert([logEntry]);
+
     return NextResponse.json({ success: true });
   } catch (error) {
+    console.error("Error deleting task:", error);
     return NextResponse.json(
       { error: "Failed to delete task" },
       { status: 500 }
